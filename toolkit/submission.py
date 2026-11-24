@@ -1,7 +1,7 @@
 """Evidence submission model and validator for the Agent Arena.
 
-A submission, in the format recorded from the live competition page
-on 2026-11-23, is:
+A submission, in the format settled by the two first hand live
+reads of the competition page on 2026-11-24, is:
 
     {
       "market_id": 1234,
@@ -14,9 +14,15 @@ on 2026-11-23, is:
           "published_date": "2026-11-24"
         }
       ],
+      "attachments": ["chart.png"],
       "confidence": 0.7,
       "note": "Optional short note."
     }
+
+Attachments are the files a submission carries (at most 3). The
+confidence field is not mentioned on the current page; it stays in
+the model as optional because the published agent guide may define
+the real schema.
 
 The validator enforces the competition rules locally, before
 anything is sent anywhere. Every limit comes from rules.py, the
@@ -70,6 +76,7 @@ class Submission:
     market_id: object = None
     outcome: str = ""
     evidence: list = field(default_factory=list)
+    attachments: list = field(default_factory=list)
     confidence: object = None
     note: str = ""
 
@@ -81,6 +88,7 @@ class Submission:
             market_id=data.get("market_id"),
             outcome=data.get("outcome", ""),
             evidence=items,
+            attachments=list(data.get("attachments", []) or []),
             confidence=data.get("confidence"),
             note=data.get("note", ""),
         )
@@ -90,6 +98,7 @@ class Submission:
             "market_id": self.market_id,
             "outcome": self.outcome,
             "evidence": [item.to_dict() for item in self.evidence],
+            "attachments": list(self.attachments),
             "confidence": self.confidence,
             "note": self.note,
         }
@@ -119,32 +128,22 @@ def validate_submission(submission, state=None, now=None):
     an empty list means pass.
 
     state is an optional SubmissionState of already accepted
-    submissions; when given, the hourly per market limit, the daily
-    paid cap and the single side rule are enforced against it.
+    submissions; when given, the per market cap of 3 submissions and
+    the single side rule are enforced against it.
     now is an optional aware datetime for tests; defaults to the
-    current time in the rules timezone.
+    current time in the local timezone.
     """
     failures = []
     if now is None:
-        now = datetime.now(ZoneInfo(rules.DAILY_COUNT_TIMEZONE))
+        now = datetime.now(ZoneInfo(rules.LOCAL_TIMEZONE))
     today = now.date()
 
-    # Market ID: an integer strictly above the recorded floor.
+    # Market ID: an integer. The settled rules carry no ID floor.
     if isinstance(submission.market_id, bool) or not isinstance(
         submission.market_id, int
     ):
         failures.append(
             "market_id must be an integer, got %r" % (submission.market_id,)
-        )
-    elif submission.market_id <= rules.MIN_MARKET_ID_EXCLUSIVE:
-        failures.append(
-            "market_id %d is not above %d; submissions are only allowed "
-            "on markets with an ID over %d"
-            % (
-                submission.market_id,
-                rules.MIN_MARKET_ID_EXCLUSIVE,
-                rules.MIN_MARKET_ID_EXCLUSIVE,
-            )
         )
 
     # Outcome: exactly one side of a Yes or No market.
@@ -154,16 +153,41 @@ def validate_submission(submission, state=None, now=None):
             % (", ".join(rules.VALID_OUTCOMES), submission.outcome)
         )
 
-    # Confidence: a score inside the recorded range.
-    if not _is_real_number(submission.confidence):
+    # Confidence: optional. The current page does not mention it, so
+    # it is only checked when a value is supplied.
+    if submission.confidence is not None:
+        if not _is_real_number(submission.confidence):
+            failures.append(
+                "confidence must be a number, got %r" % (submission.confidence,)
+            )
+        elif not (
+            rules.CONFIDENCE_MIN <= submission.confidence <= rules.CONFIDENCE_MAX
+        ):
+            failures.append(
+                "confidence %r is outside the allowed range %s to %s"
+                % (submission.confidence, rules.CONFIDENCE_MIN, rules.CONFIDENCE_MAX)
+            )
+
+    # Attachments: the files a submission carries, at most 3.
+    attachments = submission.attachments or []
+    if not isinstance(attachments, list):
         failures.append(
-            "confidence must be a number, got %r" % (submission.confidence,)
+            "attachments must be a list of file names, got %r"
+            % (submission.attachments,)
         )
-    elif not (rules.CONFIDENCE_MIN <= submission.confidence <= rules.CONFIDENCE_MAX):
-        failures.append(
-            "confidence %r is outside the allowed range %s to %s"
-            % (submission.confidence, rules.CONFIDENCE_MIN, rules.CONFIDENCE_MAX)
-        )
+    else:
+        if len(attachments) > rules.MAX_ATTACHMENTS_PER_SUBMISSION:
+            failures.append(
+                "a submission carries at most %d files (attachments); "
+                "got %d"
+                % (rules.MAX_ATTACHMENTS_PER_SUBMISSION, len(attachments))
+            )
+        for index, name in enumerate(attachments):
+            if not isinstance(name, str) or not name.strip():
+                failures.append(
+                    "attachment %d is not a usable file name: %r"
+                    % (index + 1, name)
+                )
 
     # Evidence items: at least one, each fully sourced and dated.
     if len(submission.evidence) < rules.MIN_EVIDENCE_ITEMS:
@@ -201,15 +225,16 @@ def validate_submission(submission, state=None, now=None):
     if state is not None and isinstance(submission.market_id, int) and not isinstance(
         submission.market_id, bool
     ):
-        elapsed = state.seconds_since_last_submission(submission.market_id, now)
-        if elapsed is not None and elapsed < rules.MIN_SECONDS_BETWEEN_SUBMISSIONS_PER_MARKET:
-            remaining = int(
-                rules.MIN_SECONDS_BETWEEN_SUBMISSIONS_PER_MARKET - elapsed
-            )
+        already = state.submission_count_for_market(submission.market_id)
+        if already >= rules.MAX_SUBMISSIONS_PER_MARKET:
             failures.append(
-                "market %d already received a submission %d seconds ago; "
-                "at most one submission per market per hour, wait %d more "
-                "seconds" % (submission.market_id, int(elapsed), remaining)
+                "market %d already has %d submissions; at most %d "
+                "submissions per agent per market"
+                % (
+                    submission.market_id,
+                    already,
+                    rules.MAX_SUBMISSIONS_PER_MARKET,
+                )
             )
         earlier_outcome = state.recorded_outcome(submission.market_id)
         if earlier_outcome is not None and earlier_outcome != submission.outcome:
@@ -217,12 +242,6 @@ def validate_submission(submission, state=None, now=None):
                 "market %d was already evidenced for %s; this agent never "
                 "evidences both sides of one market (the two sides cancel "
                 "out)" % (submission.market_id, earlier_outcome)
-            )
-        sent_today = state.paid_submissions_on(today)
-        if sent_today >= rules.MAX_PAID_SUBMISSIONS_PER_DAY:
-            failures.append(
-                "daily paid submission cap reached: %d already sent today "
-                "(limit %d)" % (sent_today, rules.MAX_PAID_SUBMISSIONS_PER_DAY)
             )
 
     return failures

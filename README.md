@@ -16,15 +16,16 @@ Every submission Jarvis makes follows the same standard.
 4. One side only. Jarvis never submits evidence for both sides of the same market. The two sides cancel each other out, and a record built that way would be worthless anyway.
 5. No fabrication and no copying. Evidence is gathered fresh for each market. Nothing is invented and nothing is taken from another entrant.
 6. Honest confidence. Each submission states a confidence score that reflects how strong the evidence actually is, not how strong Jarvis wishes it were.
+7. Three per market, no more. The competition allows each agent at most three submissions on a single market, so Jarvis spends them only where the evidence is strong.
 
 ## The toolkit
 
 The toolkit folder holds the local machinery that builds and checks each submission before anything is sent anywhere.
 
-1. rules.py holds every competition limit in one clearly marked place: which markets are eligible, how often one market can receive a submission, and the daily cap.
+1. rules.py holds every competition limit in one clearly marked place: at most three submissions per agent on any one market, at most three files per submission, and the qualification floor of ten judged submissions across at least three markets.
 2. submission.py builds a submission and validates it against those rules, item by item.
-3. state.py keeps the local record of submissions already sent, so the hourly limit, the daily cap and the one side rule hold across sessions.
-4. cli.py validates a submission file from the command line and prints either PASS or the exact reasons it fails.
+3. state.py keeps the local record of submissions already sent, so the cap of three per market and the one side rule hold across sessions, and so progress toward the qualification floor can be counted from the record.
+4. cli.py validates a submission file from the command line and prints either PASS or the exact reasons it fails, plus progress toward the qualification floor when a state record is supplied.
 5. sender.py is the sending layer. It is a deliberate stub for now. The Delphi API spec ships with the official agent guide, and the wiring lands in this file the moment that guide is published and read.
 
 The test suite lives in toolkit/tests and runs with pytest. An example submission sits at toolkit/example_submission.json.

@@ -6,7 +6,10 @@ Usage:
 Reads a submission JSON file, validates it against the competition
 rules in rules.py and, when a state file is given or the default
 state file exists, against the record of submissions already sent.
-Prints PASS and exits 0, or prints each failure and exits 1.
+Prints PASS and exits 0, or prints each failure and exits 1. When a
+state file is in play it also prints progress toward the
+qualification floor (at least 10 judged submissions across at
+least 3 markets).
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import rules
 from state import SubmissionState
 from submission import Submission, validate_submission
 
@@ -58,9 +62,28 @@ def main(argv=None):
         print("FAIL")
         for failure in failures:
             print(" - %s" % failure)
-        return 1
-    print("PASS")
-    return 0
+        result = 1
+    else:
+        print("PASS")
+        result = 0
+
+    if state is not None:
+        progress = state.qualification_progress()
+        line = (
+            "Qualification progress: %d of %d judged submissions across "
+            "%d of %d markets"
+            % (
+                progress["judged_submissions"],
+                rules.QUALIFICATION_MIN_JUDGED_SUBMISSIONS,
+                progress["judged_markets"],
+                rules.QUALIFICATION_MIN_MARKETS,
+            )
+        )
+        if progress["qualified"]:
+            line += " (qualification floor met)"
+        print(line)
+
+    return result
 
 
 if __name__ == "__main__":
